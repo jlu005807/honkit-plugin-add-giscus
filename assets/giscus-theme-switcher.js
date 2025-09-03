@@ -1,12 +1,19 @@
 // 优化的 Giscus 主题与字体颜色同步脚本
 (function () {
+    // 定义全局函数，以便在页面跳转后调用
+    window.applyGiscusTheme = function() {
+        if (window._internalApplyGiscusTheme) {
+            window._internalApplyGiscusTheme();
+        }
+    };
+
     document.addEventListener('DOMContentLoaded', function () {
         // 精简优化版：保留选择器优先级、映射注入和 iframe postMessage；移除 themeColors 支持
 
         // 默认主题映射（可被 window.giscusThemeMapping 覆盖）
         var defaultThemeMapping = {
             'color-theme-1': 'light',
-            'color-theme-2': 'dark',
+            'color-theme-2': 'dark_dimmed',
             'default': 'light',
             'sepia': 'preferred_color_scheme',
             'night': 'dark_dimmed',
@@ -24,18 +31,35 @@
         function detectActiveThemeClass() {
             var book = document.querySelector('.book');
             if (!book) return 'default';
-
-            // 优先：检查 .book.font-size-2.font-family-1.<key> 形式
-            for (var key in themeMapping) {
-                if (!Object.prototype.hasOwnProperty.call(themeMapping, key)) continue;
-                var sel = '.book.font-size-2.font-family-1.' + key;
-                if (document.querySelector(sel)) return key;
+            
+            // 调试日志，帮助诊断主题检测
+            if (window.giscusDebug) {
+                console.log('[giscus-theme] Book element classes:', Array.from(book.classList));
             }
 
-            // 其次：查找 color-theme-* 类
+            // 第一优先级：检查特定主题类名
+            if (book.classList.contains('color-theme-1')) return 'color-theme-1';
+            if (book.classList.contains('theme-color-1')) return 'color-theme-1'; // 别名处理
+            
+            if (book.classList.contains('color-theme-2')) return 'color-theme-2';
+            if (book.classList.contains('theme-color-2')) return 'color-theme-2'; // 别名处理
+
+            // 第二优先级：查找 color-theme-* 类
             for (var i = 0; i < book.classList.length; i++) {
                 var c = book.classList[i];
                 if (c.indexOf('color-theme-') === 0) return c;
+                if (c.indexOf('theme-color-') === 0) {
+                    // 将theme-color-X转换为color-theme-X
+                    return 'color-theme-' + c.substring(12); 
+                }
+            }
+            
+            // 第三优先级：检查 .book.font-size-2.font-family-1.<key> 形式
+            for (var key in themeMapping) {
+                if (!Object.prototype.hasOwnProperty.call(themeMapping, key)) continue;
+                if (book.classList.contains(key)) return key;
+                var sel = '.book.font-size-2.font-family-1.' + key;
+                if (document.querySelector(sel)) return key;
             }
 
             // 其它常见类名回退
@@ -85,14 +109,25 @@
             } catch (e) { /* ignore */ }
         }
 
+        // 定义内部应用主题的函数
+        window._internalApplyGiscusTheme = function() {
+            var activeClass = detectActiveThemeClass();
+            var gTheme = mapToGiscusTheme(activeClass);
+            postThemeToIframe(gTheme);
+            ensureFontColorVar();
+            
+            if (window.giscusDebug) {
+                console.log('[giscus-theme] 应用主题:', { class: activeClass, theme: gTheme });
+            }
+            
+            return gTheme;
+        };
+        
         function updateAll() {
             if (scheduled) return;
             scheduled = setTimeout(function () {
                 scheduled = null;
-                var activeClass = detectActiveThemeClass();
-                var gTheme = mapToGiscusTheme(activeClass);
-                postThemeToIframe(gTheme);
-                ensureFontColorVar();
+                window._internalApplyGiscusTheme();
             }, 80);
         }
 
@@ -133,5 +168,19 @@
 
         // 首次运行
         updateAll();
+        
+        // 为了确保正确应用主题，特别是对于theme-color-1，进行多次尝试
+        setTimeout(window._internalApplyGiscusTheme, 500);
+        setTimeout(window._internalApplyGiscusTheme, 1000);
+        
+        // 为HonKit页面变化事件添加特殊处理
+        if (window.gitbook) {
+            window.gitbook.events.on("page.change", function() {
+                // 页面变化后多次尝试应用主题
+                setTimeout(window._internalApplyGiscusTheme, 200);
+                setTimeout(window._internalApplyGiscusTheme, 500);
+                setTimeout(window._internalApplyGiscusTheme, 1000);
+            });
+        }
     });
 })();
