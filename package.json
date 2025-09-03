@@ -1,0 +1,44 @@
+{
+  "name": "honkit-plugin-add-giscus",
+  "version": "0.0.1",
+  "description": "A HonKit plugin to add Giscus comments to book pages",
+  "engines": {
+    "honkit": ">=6.0.3"
+  },
+  "main": "index.js",
+  "keywords": [
+    "honkit",
+    "honkit-plugin",
+    "gitbook",
+    "gitbook-plugin",
+    "giscus",
+    "comments",
+    "discussions"
+  ],
+  "author": "ozy",
+   "repository": {
+    "type": "git",
+    "url": "https://github.com/jlu005807/honkit-plugin-add-giscus"
+  },
+  "bugs": {
+    "url": "https://github.com/jlu005807/honkit-plugin-add-giscus/issues"
+  },
+  "homepage": "https://github.com/jlu005807/honkit-plugin-add-giscus#readme",
+  "license": "Apache-2.0",
+  "files": [
+    "index.js",
+    "assets/",
+    "README.md",
+    "README.en.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node ./validate.js",
+    "validate": "node ./validate.js"
+  }
+}
+
