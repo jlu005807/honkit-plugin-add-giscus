@@ -31,6 +31,15 @@
     var _pendingAttempts = 0;
     var _maxAttempts = 8;
     var _backoffBase = 150; // ms
+    // 可配置项：当 ensureIframeReceivesTheme 超时未生效时是否触发受保护的 reload（默认开启）
+    try { if (typeof window.giscusEnsureReloadOnTimeout === 'undefined') window.giscusEnsureReloadOnTimeout = true; } catch (e) {}
+    // ensureIframeReceivesTheme 超时时间（ms），默认 6000
+    try { if (typeof window.giscusEnsureReceiveTimeoutMs === 'undefined') window.giscusEnsureReceiveTimeoutMs = 6000; } catch (e) {}
+
+    // 读取运行时配置的辅助函数（包装 window.giscusConfig）
+    function getGiscusConfig() {
+        try { return window.giscusConfig || {}; } catch (e) { return {}; }
+    }
 
         // 防抖工具
         function debounce(fn, wait) {
@@ -86,7 +95,7 @@
                 iframe.addEventListener('load', function () {
                     try {
                         if (pendingTheme) {
-                            safePostMessage(iframe, { giscus: { setConfig: { theme: pendingTheme } } });
+                            safePostMessage(iframe, { giscus: { setConfig: { theme: pendingTheme } } }, true);
                             pendingTheme = null;
                         }
                     } catch (e) {}
@@ -94,11 +103,41 @@
             } catch (e) {}
         }
 
-        function safePostMessage(iframe, msg) {
+        // 安全的 postMessage，同时支持尝试多种消息形态与多个 origin 以提高兼容性
+        // 用法: safePostMessage(iframe, msg, true) -> 尝试多种变体
+        function safePostMessage(iframe, msg, variants) {
             try {
-                if (iframe && iframe.contentWindow) {
+                if (!(iframe && iframe.contentWindow)) return false;
+                if (!variants) {
                     iframe.contentWindow.postMessage(msg, '*');
                     return true;
+                }
+
+                // 当要求 variants 时，尝试多种消息形态（覆盖不同 giscus 版本）和多个 origin
+                var theme = null;
+                try {
+                    if (msg && msg.giscus && msg.giscus.setConfig && typeof msg.giscus.setConfig.theme !== 'undefined') theme = msg.giscus.setConfig.theme;
+                    else if (msg && msg.setConfig && typeof msg.setConfig.theme !== 'undefined') theme = msg.setConfig.theme;
+                } catch (e) { theme = null; }
+
+                var payloads = [];
+                if (theme !== null) {
+                    payloads.push({ giscus: { setConfig: { theme: theme } } });
+                    payloads.push({ setConfig: { theme: theme } });
+                    // historical variants
+                    payloads.push({ type: 'setConfig', config: { theme: theme } });
+                }
+                // 保留原始 msg 以防其他拓展使用不同字段
+                payloads.push(msg);
+
+                var origins = ['*', 'https://giscus.app', 'https://giscus.github.com'];
+                for (var pi = 0; pi < payloads.length; pi++) {
+                    for (var oi = 0; oi < origins.length; oi++) {
+                        try {
+                            iframe.contentWindow.postMessage(payloads[pi], origins[oi]);
+                            return true;
+                        } catch (e) {}
+                    }
                 }
             } catch (e) {}
             return false;
@@ -108,13 +147,64 @@
             try {
                 var f = findIframe();
                 if (f && pendingTheme) {
-                    if (safePostMessage(f, { giscus: { setConfig: { theme: pendingTheme } } })) {
+                    if (safePostMessage(f, { giscus: { setConfig: { theme: pendingTheme } } }, true)) {
                         pendingTheme = null;
                         _pendingAttempts = 0;
                     }
                 }
             } catch (e) {}
         }, 150);
+
+        // 创建并插入 giscus client.js（使用 window.giscusConfig），确保 data-theme 在插入时为映射后的主题
+        function createGiscusClient(theme) {
+            try {
+                var cfg = getGiscusConfig();
+                var container = document.getElementById('giscus-container');
+                if (!container) return null;
+
+                // 移除旧的 script/iframe
+                try { var oldScript = document.getElementById('giscus-script'); if (oldScript) oldScript.remove(); } catch (e) {}
+                try { var oldIframe = document.querySelector('iframe.giscus-frame'); if (oldIframe) oldIframe.remove(); } catch (e) {}
+
+                var script = document.createElement('script');
+                script.id = 'giscus-script';
+                script.className = 'giscus-script';
+                script.src = 'https://giscus.app/client.js';
+                script.setAttribute('crossorigin', 'anonymous');
+                // Set data attributes from config
+                try { if (cfg.repo) script.setAttribute('data-repo', cfg.repo); } catch (e) {}
+                try { if (cfg.repoId) script.setAttribute('data-repo-id', cfg.repoId); } catch (e) {}
+                try { if (cfg.category) script.setAttribute('data-category', cfg.category); } catch (e) {}
+                try { if (cfg.categoryId) script.setAttribute('data-category-id', cfg.categoryId); } catch (e) {}
+                try { if (cfg.mapping) script.setAttribute('data-mapping', cfg.mapping); } catch (e) {}
+                try {
+                    var term = (window.location.pathname || '');
+                    if (term && term.endsWith('/index.html')) term = term.substring(0, term.length - 11);
+                    else if (term && term.endsWith('.html')) term = term.substring(0, term.length - 5);
+                    script.setAttribute('data-term', term);
+                } catch (e) {}
+                try { if (cfg.strict) script.setAttribute('data-strict', cfg.strict); } catch (e) {}
+                try { if (typeof cfg.reactionsEnabled !== 'undefined') script.setAttribute('data-reactions-enabled', cfg.reactionsEnabled); } catch (e) {}
+                try { if (typeof cfg.emitMetadata !== 'undefined') script.setAttribute('data-emit-metadata', cfg.emitMetadata); } catch (e) {}
+                try { if (cfg.inputPosition) script.setAttribute('data-input-position', cfg.inputPosition); } catch (e) {}
+                try { script.setAttribute('data-theme', theme || (cfg.theme || 'light')); } catch (e) {}
+                try { if (cfg.lang) script.setAttribute('data-lang', cfg.lang); } catch (e) {}
+                try { script.setAttribute('data-loading', (cfg.loading || 'eager')); } catch (e) {}
+                // async to avoid blocking
+                script.async = true;
+
+                // load handler: ensure theme applied after script loads
+                script.onload = function () {
+                    try {
+                        if (window.giscusDebug) console.log('[giscus-theme] giscus client loaded, applying theme', theme);
+                        setTimeout(function () { tryPostThemeImmediate(true); }, 300);
+                    } catch (e) {}
+                };
+
+                container.appendChild(script);
+                return script;
+            } catch (e) { return null; }
+        }
 
         function detectActiveThemeClass() {
             var book = document.querySelector('.book');
@@ -247,7 +337,7 @@
                         if (!pendingTheme) return;
                         var f = findIframe();
                         if (f) {
-                            if (safePostMessage(f, { giscus: { setConfig: { theme: pendingTheme } } })) {
+                            if (safePostMessage(f, { giscus: { setConfig: { theme: pendingTheme } } }, true)) {
                                 try { _lastSentTheme = pendingTheme; window._giscusLastSentTheme = _lastSentTheme; } catch (e) {}
                                 pendingTheme = null;
                                 _pendingAttempts = 0;
@@ -259,6 +349,156 @@
                     } catch (e) { }
                 }, delay);
             } catch (e) {}
+        }
+
+        // 立即尝试通过 postMessage 将主题发送到 iframe 的轻量函数
+        // 带速率限制与回退，不会强制 reload iframe（除非找不到 iframe，则设置 pending）
+        function tryPostThemeImmediate(force) {
+            try {
+                var now = Date.now();
+                // 速率限制：同一上下文内不超过一次/600ms（除非 force 为 true）
+                if (!force && window._giscusLastImmediateAttempt && (now - window._giscusLastImmediateAttempt) < 600) return;
+                window._giscusLastImmediateAttempt = now;
+
+                // 获取映射后的主题
+                var theme = (window._internalApplyGiscusTheme ? window._internalApplyGiscusTheme() : null);
+                if (!theme) return;
+
+                var f = findIframe();
+                if (f) {
+                    // 优先通过 postMessage 更新主题，不 reload
+                    if (safePostMessage(f, { giscus: { setConfig: { theme: theme } } }, true)) {
+                        try { f.__giscusThemeSent = theme; _lastSentTheme = theme; } catch (e) {}
+                        return;
+                    }
+                    // postMessage 失败则走重试逻辑
+                    pendingTheme = theme;
+                    _pendingAttempts = 0;
+                    scheduleIframeRetry();
+                    // 对于较长页面，持续尝试确保 iframe 真正接收到主题
+                    try { ensureIframeReceivesTheme(f, theme, 6000); } catch (e) {}
+                } else {
+                    // iframe 不存在时，设置 pending 并启动重试（不会立即 reload）
+                    pendingTheme = theme;
+                    _pendingAttempts = 0;
+                    scheduleIframeRetry();
+                    // 如果配置为 eager，则尝试创建 client.js 以触发 iframe 尽早加载
+                    try { if (window.giscusConfig && window.giscusConfig.loading === 'eager') createGiscusClient(theme); } catch (e) {}
+                }
+            } catch (e) {}
+        }
+
+        // 在导航后短时间内强力刷新 pendingTheme：每 interval 尝试发送，最多持续 duration 毫秒
+        function aggressiveFlushPendingTheme(duration, interval) {
+            try {
+                if (window._giscusAggressiveFlushInProgress) return;
+                window._giscusAggressiveFlushInProgress = true;
+                var start = Date.now();
+                var iv = setInterval(function () {
+                    try {
+                        var now = Date.now();
+                        if (!pendingTheme && _lastSentTheme) {
+                            clearInterval(iv);
+                            window._giscusAggressiveFlushInProgress = false;
+                            return;
+                        }
+                        var f = findIframe();
+                        if (f && pendingTheme) {
+                            if (safePostMessage(f, { giscus: { setConfig: { theme: pendingTheme } } }, true)) {
+                                try { _lastSentTheme = pendingTheme; f.__giscusThemeSent = pendingTheme; } catch (e) {}
+                                pendingTheme = null;
+                                clearInterval(iv);
+                                window._giscusAggressiveFlushInProgress = false;
+                                return;
+                            }
+                        }
+                        if (now - start > duration) {
+                            clearInterval(iv);
+                            window._giscusAggressiveFlushInProgress = false;
+                        }
+                    } catch (e) {
+                        clearInterval(iv);
+                        window._giscusAggressiveFlushInProgress = false;
+                    }
+                }, interval || 200);
+            } catch (e) {}
+        }
+
+        // 确保特定 iframe 在较长时间窗口内能收到主题（用于内容较多导致 iframe 初始化慢的页面）
+        function ensureIframeReceivesTheme(iframe, theme, timeoutMs) {
+            try {
+                if (!iframe || !theme) return;
+                // 如果 iframe 标记已收到相同主题，则无需额外操作
+                try { if (iframe.__giscusThemeSent === theme) return; } catch (e) {}
+                // 优化：如果 iframe 使用 lazy loading，尝试将其改为 eager 以提前触发加载
+                try {
+                    var loading = iframe.getAttribute && iframe.getAttribute('loading');
+                    if (loading === 'lazy') {
+                        try { iframe.setAttribute('loading', 'eager'); } catch (e) {}
+                    }
+                } catch (e) {}
+
+                // 避免重复创建多个计时器
+                if (iframe.__giscusReceiveTimer) return;
+                var start = Date.now();
+                var deadline = start + (typeof timeoutMs === 'number' ? timeoutMs : (window.giscusEnsureReceiveTimeoutMs || 6000));
+                iframe.__giscusReceiveTimer = setInterval(function () {
+                    try {
+                        // 若已达到期望主题，则结束
+                        if (iframe.__giscusThemeSent === theme) {
+                            clearInterval(iframe.__giscusReceiveTimer);
+                            iframe.__giscusReceiveTimer = null;
+                            return;
+                        }
+                        // 若超时且未达到，清理并允许外层决定是否 reload（由 ensureSingleReloadFor 控制）
+                        if (Date.now() > deadline) {
+                            // 超时未生效：若启用了 reload-on-timeout，则进行受保护的 reload
+                            try {
+                                if (window.giscusDebug) console.log('[giscus-theme] ensureIframeReceivesTheme timeout for theme', theme, 'iframe', iframe);
+                                if (window.giscusEnsureReloadOnTimeout) {
+                                    try {
+                                        var urlKey = (location.pathname || '') + (location.search || '') + (location.hash || '');
+                                        ensureSingleReloadFor(urlKey, theme, iframe);
+                                    } catch (e) {}
+                                }
+                            } catch (e) {}
+                            clearInterval(iframe.__giscusReceiveTimer);
+                            iframe.__giscusReceiveTimer = null;
+                            return;
+                        }
+                        // 每次尝试 postMessage
+                        try {
+                            if (safePostMessage(iframe, { giscus: { setConfig: { theme: theme } } }, true)) {
+                                try { iframe.__giscusThemeSent = theme; _lastSentTheme = theme; } catch (e) {}
+                                clearInterval(iframe.__giscusReceiveTimer);
+                                iframe.__giscusReceiveTimer = null;
+                                return;
+                            }
+                        } catch (e) {}
+                        // 若 iframe.contentWindow 不可用，触发一次 findIframe 以更新引用
+                        try { if (!iframe.contentWindow) findIframe(); } catch (e) {}
+                    } catch (e) {
+                        try { clearInterval(iframe.__giscusReceiveTimer); iframe.__giscusReceiveTimer = null; } catch (ee) {}
+                    }
+                }, 300);
+            } catch (e) {}
+        }
+
+        // reload guard：确保相同 URL+theme 只做一次 reload
+        function ensureSingleReloadFor(url, theme, iframe) {
+            try {
+                if (!window._giscusReloadedFor) window._giscusReloadedFor = {};
+                var key = url + '|' + theme;
+                if (window._giscusReloadedFor[key]) return false;
+                window._giscusReloadedFor[key] = Date.now();
+                // 清理旧条目
+                setTimeout(function() {
+                    try { delete window._giscusReloadedFor[key]; } catch (e) {}
+                }, 15000);
+                // 执行 reload
+                try { reloadGiscusIframe(iframe, theme); } catch (e) {}
+                return true;
+            } catch (e) { return false; }
         }
 
         // 确保 --font-color 存在（不主动从外部注入颜色）
@@ -335,8 +575,15 @@
                 try { if (window.giscusDebug) console.log('[giscus-theme] applyThemeAndMaybeReload', { theme: applied, force: !!force }); } catch (e) {}
                 // 若强制重载或当前页面尚未有 iframe，则尝试 reload
                 var f = findIframe();
+                // 如果页面没有注入 giscus client.js，但我们有配置且首选 eager，则创建 client
+                try {
+                    var existingScript = document.getElementById('giscus-script');
+                    if (!existingScript && window.giscusConfig && (window.giscusConfig.loading === 'eager' || typeof window.giscusConfig.loading === 'undefined')) {
+                        try { createGiscusClient(applied); } catch (e) {}
+                    }
+                } catch (e) {}
                 // 如果主题实际发生变化（与上次发送的不同），则发送并在必要时重载
-                if (applied && applied !== _lastSentTheme) {
+                    if (applied && applied !== _lastSentTheme) {
                     // 如果没有 iframe，则设置 pendingTheme 并启动重试
                     if (!f) {
                         try { pendingTheme = applied; } catch (e) {}
@@ -347,6 +594,8 @@
                     } else {
                         // 直接发送新主题到已存在的 iframe
                         postThemeToIframe(applied);
+                        // 对于长页面，持续确保 iframe 收到主题（避免因页面未滚动或 lazy 加载导致主题回退）
+                        try { ensureIframeReceivesTheme(f, applied, 6000); } catch (e) {}
                     }
                 } else {
                     // 主题无变化
@@ -457,12 +706,12 @@
             try { window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', updateAll); } catch (e) {}
         }
 
-    // 首次运行：应用并强制重载 giscus，确保非默认主题进入页面也能生效
+        // 首次运行：应用并尽量通过 postMessage 更新 giscus 主题（避免 reload）
     updateAll();
-    try { setTimeout(function () { applyThemeAndMaybeReload(true); }, 50); } catch (e) {}
+    try { setTimeout(function () { tryPostThemeImmediate(true); }, 120); } catch (e) {}
         
-        // 为了确保正确应用主题（主题类可能在 JS 之后才添加），进行多次尝试
-        var initialAttempts = [200, 600, 1200, 2500, 4000];
+        // 为了确保正确应用主题（主题类可能在 JS 之后才添加），进行少量重试
+        var initialAttempts = [200, 800, 2000];
         initialAttempts.forEach(function (ms) { setTimeout(window._internalApplyGiscusTheme, ms); });
 
         // Hook history API (pushState/replaceState) to handle SPA-like navigations
@@ -476,22 +725,56 @@
                 };
             });
             window.addEventListener('popstate', function () { try { window.dispatchEvent(new Event('giscus:nav')); } catch (e) {} });
-            window.addEventListener('giscus:nav', function () { try { updateAll(); observeBook(); scheduleIframeCheck(); applyThemeAndMaybeReload(true); setTimeout(function () { try { applyThemeAndMaybeReload(true); } catch (e) {} }, 300); setTimeout(function () { try { applyThemeAndMaybeReload(true); } catch (e) {} }, 800); } catch (e) {} });
+            window.addEventListener('giscus:nav', function () {
+                try {
+                    updateAll();
+                    observeBook();
+                    scheduleIframeCheck();
+                    // 立即尝试 postMessage 更新主题（不 reload）
+                    tryPostThemeImmediate(false);
+                    // 强力 flush pendingTheme 短时间内尝试发送
+                    aggressiveFlushPendingTheme(700, 180);
+                    // 若短时间内未生效，尝试更强的 postMessage
+                    setTimeout(function () { tryPostThemeImmediate(true); }, 300);
+                    // 导航时确保 client 存在（若配置为 eager）
+                    try { var s = document.getElementById('giscus-script'); if (!s && window.giscusConfig && window.giscusConfig.loading === 'eager') { var th = (window._internalApplyGiscusTheme ? window._internalApplyGiscusTheme() : null); if (th) createGiscusClient(th); } } catch (e) {}
+                    // 最后保障：在更长延迟后按需重载一次，但确保同一 URL+theme 只 reload 一次
+                    setTimeout(function () { try {
+                        var theme = (window._internalApplyGiscusTheme ? window._internalApplyGiscusTheme() : null);
+                        if (theme) {
+                            var f = findIframe();
+                            var urlKey = (location.pathname || '') + (location.search || '') + (location.hash || '');
+                            ensureSingleReloadFor(urlKey, theme, f);
+                        }
+                    } catch (e) {} }, 800);
+                } catch (e) {}
+            });
         } catch (e) {}
 
         // 监听路径变化（path/name/search/hash），用于不走 history hook 的场景或额外保险
         try {
             var _lastPathForGiscus = (location.pathname || '') + (location.search || '') + (location.hash || '');
-            function _onPathChangeDetected(newPath) {
+        function _onPathChangeDetected(newPath) {
                 try {
-                    if (window.giscusDebug) console.log('[giscus-theme] path change detected:', newPath);
-                    updateAll();
-                    observeBook();
-                    scheduleIframeCheck();
-                    // 强制尝试重载/应用主题（短延迟做多次保障）
-                    applyThemeAndMaybeReload(true);
-                    setTimeout(function () { try { applyThemeAndMaybeReload(true); } catch (e) {} }, 300);
-                    setTimeout(function () { try { applyThemeAndMaybeReload(true); } catch (e) {} }, 800);
+            if (window.giscusDebug) console.log('[giscus-theme] path change detected:', newPath);
+            updateAll();
+            observeBook();
+            scheduleIframeCheck();
+            // 立即尝试通过 postMessage 更新主题（轻量，不 reload）
+            tryPostThemeImmediate(false);
+            // 短时内强力 flush pendingTheme（最多 700ms，每 180ms 尝试）
+            aggressiveFlushPendingTheme(700, 180);
+            // 若短延迟后仍不生效，再走较重的重试/受限重载路径
+            setTimeout(function () { tryPostThemeImmediate(true); }, 350);
+            // 最后保障：在更长延迟后按需重载一次，但确保同一 URL+theme 只 reload 一次
+            setTimeout(function () { try {
+                    var theme = (window._internalApplyGiscusTheme ? window._internalApplyGiscusTheme() : null);
+                    if (theme) {
+                        var f = findIframe();
+                        var urlKey = (location.pathname || '') + (location.search || '') + (location.hash || '');
+                        ensureSingleReloadFor(urlKey, theme, f);
+                    }
+                } catch (e) {} }, 900);
                 } catch (e) {}
             }
 
@@ -550,10 +833,12 @@
         // 为HonKit页面变化事件添加特殊处理
         if (window.gitbook) {
             window.gitbook.events.on("page.change", function() {
-                // 页面变化后多次尝试应用主题
-                setTimeout(window._internalApplyGiscusTheme, 200);
+                // 页面变化后先尝试立即通过 postMessage 更新主题（轻量）
+                try { tryPostThemeImmediate(false); } catch (e) {}
+                // 短延迟后再尝试一次（提高成功率）
+                setTimeout(function() { try { tryPostThemeImmediate(true); } catch (e) {} }, 220);
+                // 兼容回退：在稍后再确保内部应用函数运行
                 setTimeout(window._internalApplyGiscusTheme, 500);
-                setTimeout(window._internalApplyGiscusTheme, 1000);
             });
         }
     });

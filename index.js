@@ -47,7 +47,7 @@ module.exports = {
         var lang = config.lang || 'zh-CN';
         var strict = typeof config.strict !== 'undefined' ? 
             (config.strict ? '1' : '0') : '1';
-        var loading = config.loading || 'lazy';
+  var loading = config.loading || 'eager';
 
         // 主题映射配置
         var themeConfig = config.theme_config || config.themeConfig || {};
@@ -70,10 +70,26 @@ module.exports = {
         var commentTitle = config.commentTitle || '评论区';
 
         // 构建主题映射脚本
+        var giscusConfig = {
+          repo: repo,
+          repoId: repoId,
+          category: category,
+          categoryId: categoryId,
+          mapping: mapping,
+          strict: strict,
+          reactionsEnabled: reactionsEnabledFixed,
+          emitMetadata: emitMetadataFixed,
+          inputPosition: inputPosition,
+          theme: theme,
+          lang: lang,
+          loading: loading
+        };
+
         var themeConfigScript = '<script type="text/javascript">\n' + 
-                              '/* Giscus Theme Mapping */\n' +
+                              '/* Giscus Theme Mapping and Config */\n' +
                               'window.giscusThemeMapping = ' + themeMappingJson + ';\n' +
-                              (debug ? 'console.log("[add-giscus] 主题映射已加载:", window.giscusThemeMapping);\n' : '') +
+                              'window.giscusConfig = ' + JSON.stringify(giscusConfig) + ';\n' +
+                              (debug ? 'console.log("[add-giscus] 主题映射与配置已加载:", window.giscusThemeMapping, window.giscusConfig);\n' : '') +
                               '</script>';
         
         // 构建 Giscus 容器
@@ -82,103 +98,11 @@ module.exports = {
         
         var giscusContainer = '<div id="giscus-container" style="' + containerStyle + '">' +
                             '<div class="giscus-page-info" style="margin-bottom: 15px; font-size: 0.9em; color: #666;">' +
-                             commentTitle + ' - ' + pageTitle + '</div>' +
-                            '</div>';
+                             commentTitle + ' - ' + pageTitle + '</div>';
         
         // 构建 Giscus 跳转重加载脚本
-        var giscusScript = [
-            '<script id="giscus-page-script">',
-            '// Giscus配置和重加载实现',
-            'window.giscusConfig = {',
-            '  repo: "' + repo + '",',
-            '  repoId: "' + repoId + '",',
-            '  category: "' + category + '",',
-            '  categoryId: "' + categoryId + '",',
-            '  mapping: "' + mapping + '",',
-            '  strict: "' + strict + '",',
-            '  reactionsEnabled: "' + reactionsEnabledFixed + '",',
-            '  emitMetadata: "' + emitMetadataFixed + '",',
-            '  inputPosition: "' + inputPosition + '",',
-            '  theme: "' + theme + '",',
-            '  lang: "' + lang + '",',
-            '  loading: "' + loading + '"',
-            '};',
-            '',
-            '// 加载Giscus评论组件',
-            'function loadGiscusForCurrentPage() {',
-            '  var container = document.getElementById("giscus-container");',
-            '  if (!container) return;',
-            '',
-            '  // 清除旧内容',
-            '  var infoElement = container.querySelector(".giscus-page-info");',
-            '  var oldScript = document.getElementById("giscus-script");',
-            '  var oldIframe = document.querySelector("iframe.giscus-frame");',
-            '',
-            '  // 删除旧的giscus脚本和iframe',
-            '  if (oldScript) oldScript.remove();',
-            '  if (oldIframe) oldIframe.remove();',
-            '',
-            '  // 获取当前页面路径',
-            '  var currentPath = window.location.pathname;',
-            '  if (currentPath.endsWith("/index.html")) {',
-            '    currentPath = currentPath.substring(0, currentPath.length - 11);',
-            '  } else if (currentPath.endsWith(".html")) {',
-            '    currentPath = currentPath.substring(0, currentPath.length - 5);',
-            '  }',
-            '',
-            '  // 创建新的giscus脚本',
-            '  var script = document.createElement("script");',
-            '  script.id = "giscus-script";',
-            '  script.className = "giscus-script";',
-            '  script.src = "https://giscus.app/client.js";',
-            '  script.setAttribute("data-repo", window.giscusConfig.repo);',
-            '  script.setAttribute("data-repo-id", window.giscusConfig.repoId);',
-            '  script.setAttribute("data-category", window.giscusConfig.category);',
-            '  script.setAttribute("data-category-id", window.giscusConfig.categoryId);',
-            '  script.setAttribute("data-mapping", window.giscusConfig.mapping);',
-            '  script.setAttribute("data-term", currentPath);',
-            '  script.setAttribute("data-strict", window.giscusConfig.strict);',
-            '  script.setAttribute("data-reactions-enabled", window.giscusConfig.reactionsEnabled);',
-            '  script.setAttribute("data-emit-metadata", window.giscusConfig.emitMetadata);',
-            '  script.setAttribute("data-input-position", window.giscusConfig.inputPosition);',
-            '  script.setAttribute("data-theme", window.giscusConfig.theme);',
-            '  script.setAttribute("data-lang", window.giscusConfig.lang);',
-            '  script.setAttribute("data-loading", window.giscusConfig.loading);',
-            '  script.setAttribute("crossorigin", "anonymous");',
-            '  script.async = true;',
-            '',
-            '  // 更新页面信息',
-            '  if (infoElement) {',
-            '    var pageTitle = document.title || currentPath;',
-            '    infoElement.innerHTML = "' + commentTitle + ' - " + pageTitle;',
-            '  }',
-            '',
-            '  // 添加脚本到容器',
-            '  container.appendChild(script);',
-            '  ',
-            '  // 脚本加载后应用主题',
-            '  script.onload = function() {',
-            '    setTimeout(function() {',
-            '      if (window.applyGiscusTheme) {',
-            '        window.applyGiscusTheme();',
-            '      }',
-            '    }, 300);',
-            '  };',
-            '}',
-            '',
-            '// 初次加载',
-            'document.addEventListener("DOMContentLoaded", function() {',
-            '  loadGiscusForCurrentPage();',
-            '',
-            '  // 监听HonKit/GitBook页面切换事件',
-            '  if (window.gitbook) {',
-            '    window.gitbook.events.on("page.change", function() {',
-            '      setTimeout(loadGiscusForCurrentPage, 100);',
-            '    });',
-            '  }',
-            '});',
-            '</script>'
-        ].join('\n');
+  // 不在此处自动加载 client.js，改由 assets/giscus-theme-switcher.js 负责在正确时机创建带有映射后 theme 的脚本。
+  var giscusScript = '<!-- giscus client.js will be inserted by giscus-theme-switcher.js -->';
         
         // 添加验证脚本（调试模式下）
         var verificationScript = '';
